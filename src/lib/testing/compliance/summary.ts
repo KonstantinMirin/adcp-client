@@ -180,6 +180,12 @@ const ACTIONABLE_CANONICAL_REASONS = new Set<string>([
   'unsatisfied_contract',
   'no_phases',
   'requirement_unmet',
+  // Runner-owned coverage gaps. The adopter cannot close them by changing
+  // the agent, but they already force the track `partial`, and a partial
+  // verdict whose cause never appears in the summary is the "silently
+  // missing coverage" failure mode this block exists to prevent
+  // (adcp-client#2954).
+  'fixture_unavailable',
 ]);
 
 /**
@@ -257,6 +263,10 @@ function skipCauseDetail(reason: string): string {
       return 'pre-flight controller seeding failed';
     case 'capability_unsupported':
       return 'agent self-declared capability unsupported';
+    case 'fixture_unavailable':
+      return 'runner could not produce the fixture — coverage missing, not agent-inapplicable';
+    case 'signing_transport_unavailable':
+      return 'no request-signing vector framing exists for this run protocol — grade the MCP/REST binding';
     default:
       return reason;
   }

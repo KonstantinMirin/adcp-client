@@ -177,8 +177,136 @@ function printSoftFailBlock(failedScenarios, jsonOutput) {
   }
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Skipped-step rendering + request-signing flag parsing
+//
+// Same rationale as the markdown writers above: keep the wording and the
+// argument semantics unit-testable without spawning the CLI. A run that
+// prints `0 passed, N skipped` and nothing else reads as a clean pass, which
+// is how an ungradable conformance surface hides (adcp-client#2954).
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Canonical `RunnerSkipReason` values meaning "the runner could not grade
+ * this", as opposed to "this does not apply to your agent". Keep in sync with
+ * `DETAILED_SKIP_TO_CANONICAL` in `src/lib/testing/storyboard/types.ts`.
+ */
+const COVERAGE_GAP_SKIP_REASONS = new Set(['fixture_unavailable']);
+
+/**
+ * Escape C0/C1 control characters. Skip details can quote agent-supplied
+ * text, and a hostile agent should not be able to rewrite the terminal.
+ */
+function escapeTerminalControlChars(text) {
+  // eslint-disable-next-line no-control-regex -- the point is to escape control characters
+  const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+  return String(text).replace(CONTROL_CHARS, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/**
+ * Lines describing why a step was skipped. Empty when the step ran, or when
+ * the caller already printed a reason-specific message for it.
+ *
+ * @param {object} step storyboard step result
+ * @param {{ handledReasons?: Set<string> }} [options]
+ * @returns {string[]} indented output lines
+ */
+function formatStepSkipLines(step, options = {}) {
+  if (!step || !step.skipped) return [];
+  const detailed = step.skip_reason;
+  if (options.handledReasons?.has(detailed)) return [];
+  const canonical = step.skip?.reason;
+  if (!canonical && !detailed) return [];
+
+  const reasonText = detailed && detailed !== canonical ? `${canonical ?? 'skipped'} / ${detailed}` : canonical;
+  const label = COVERAGE_GAP_SKIP_REASONS.has(canonical) ? 'COVERAGE UNAVAILABLE' : 'Skipped';
+  const lines = [`   ${label} (${escapeTerminalControlChars(reasonText)})`];
+  if (step.skip?.detail) lines.push(`   ${escapeTerminalControlChars(step.skip.detail)}`);
+  return lines;
+}
+
+/**
+ * Verdict line(s) for a single-step run (`adcp storyboard step`).
+ *
+ * A skipped step carries `passed: true` — skip is not failure — so printing
+ * the bare verdict renders a coverage gap as a green "Passed". Route skips
+ * through the skip renderer instead, and say "Not verified" when the runner
+ * could not grade the step at all.
+ *
+ * @param {object} step storyboard step result
+ * @param {{ durationMs?: number }} [options]
+ * @returns {string[]} output lines
+ */
+function formatStepVerdictLines(step, options = {}) {
+  const suffix = typeof options.durationMs === 'number' ? ` (${options.durationMs}ms)` : '';
+  if (step?.skipped) {
+    const label = COVERAGE_GAP_SKIP_REASONS.has(step.skip?.reason) ? '⏭️  Not verified' : '⏭️  Skipped';
+    return [`${label}${suffix}`, ...formatStepSkipLines(step)];
+  }
+  return [`${step?.passed ? '✅ Passed' : '❌ Failed'}${suffix}`];
+}
+
+const SIGNING_TRANSPORTS = ['raw', 'mcp'];
+
+/**
+ * Parse the `storyboard run` request-signing knobs.
+ *
+ * Pure: returns `{ ok: true, options }` (options `null` when no flag was
+ * passed) or `{ ok: false, error }`. The CLI turns an error into a usage
+ * message and exit 2; keeping the decision here means the argument semantics
+ * are testable without spawning a process per case.
+ *
+ * `--signing-transport` is distinct from `--transport`/`--protocol`: the
+ * latter selects how the storyboard talks to the agent, this one selects how
+ * the RFC 9421 conformance vectors are framed on the wire.
+ *
+ * @param {(flag: string) => string | null} readFlag reads `--flag value` / `--flag=value`
+ * @param {(flag: string) => boolean} hasFlag whether the bare flag is present
+ */
+function parseRequestSigningFlags(readFlag, hasFlag) {
+  const transport = readFlag('--signing-transport');
+  if (transport !== null && !SIGNING_TRANSPORTS.includes(transport)) {
+    return {
+      ok: false,
+      error:
+        `--signing-transport must be one of ${SIGNING_TRANSPORTS.join('|')}, got: ${transport}\n` +
+        '       Omit the flag to infer the vector transport from the agent protocol.',
+    };
+  }
+  if (hasFlag('--signing-transport') && transport === null) {
+    return { ok: false, error: `--signing-transport requires a value (${SIGNING_TRANSPORTS.join('|')}).` };
+  }
+
+  const skipVectorsRaw = readFlag('--signing-skip-vectors');
+  if (hasFlag('--signing-skip-vectors') && skipVectorsRaw === null) {
+    return { ok: false, error: '--signing-skip-vectors requires a value (comma-separated vector ids).' };
+  }
+  const skipVectors = skipVectorsRaw
+    ? skipVectorsRaw
+        .split(',')
+        .map(id => id.trim())
+        .filter(Boolean)
+    : [];
+  if (skipVectorsRaw !== null && skipVectors.length === 0) {
+    return { ok: false, error: '--signing-skip-vectors requires at least one vector id.' };
+  }
+
+  const skipRateAbuse = hasFlag('--signing-skip-rate-abuse');
+  const requestSigning = {
+    ...(transport && { transport }),
+    ...(skipVectors.length > 0 && { skipVectors }),
+    ...(skipRateAbuse && { skipRateAbuse: true }),
+  };
+  return { ok: true, options: Object.keys(requestSigning).length > 0 ? { request_signing: requestSigning } : null };
+}
+
 module.exports = {
   escapeMarkdownCell,
+  escapeTerminalControlChars,
+  formatStepSkipLines,
+  formatStepVerdictLines,
+  parseRequestSigningFlags,
+  SIGNING_TRANSPORTS,
   buildComplianceSummaryMarkdown,
   buildStoryboardSummaryMarkdown,
   writeSummaryFile,

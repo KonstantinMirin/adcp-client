@@ -248,20 +248,27 @@ function computeTrackStatus(results: StoryboardResult[]): TrackStatus {
   const totalSteps = totalPassed + totalFailed + totalSkipped;
   const hasAssertionFailure = results.some(result => collectDetachedAssertionFailures(result).length > 0);
 
-  if (totalSteps === 0) return 'skip';
-  if (totalFailed > 0) return totalPassed === 0 ? 'fail' : 'partial';
-  if (hasAssertionFailure) return totalPassed === 0 ? 'fail' : 'partial';
-  if (totalSteps === totalSkipped) return 'skip';
-  // Storyboard-scoped assertions are not steps, so their failures correctly
-  // leave failed_count at zero. The runner's overall verdict is authoritative:
-  // some steps passed, but the cross-step invariant did not.
-  if (results.some(result => !result.overall_passed)) return 'partial';
   const hasFixtureUnavailable = results.some(result =>
     (result.passes?.flatMap(pass => pass.phases) ?? result.phases).some(phase =>
       phase.steps.some(step => step.skip?.reason === 'fixture_unavailable')
     )
   );
+
+  if (totalSteps === 0) return 'skip';
+  if (totalFailed > 0) return totalPassed === 0 ? 'fail' : 'partial';
+  if (hasAssertionFailure) return totalPassed === 0 ? 'fail' : 'partial';
+  // Ordered ahead of the all-skipped check on purpose (adcp-client#2954): a
+  // track whose every step skipped *because the runner could not produce the
+  // fixture* is not an inapplicable track, it is an unverified one. Letting
+  // it return `skip` erases it from `computeOverallStatus`'s `attempted`
+  // count, so sibling tracks alone could carry the run to `passing` while
+  // this track verified nothing.
   if (hasFixtureUnavailable) return 'partial';
+  if (totalSteps === totalSkipped) return 'skip';
+  // Storyboard-scoped assertions are not steps, so their failures correctly
+  // leave failed_count at zero. The runner's overall verdict is authoritative:
+  // some steps passed, but the cross-step invariant did not.
+  if (results.some(result => !result.overall_passed)) return 'partial';
 
   // No failures. Demote to `silent` when every observation-bearing
   // invariant record reports zero observations. Step-level passes alone

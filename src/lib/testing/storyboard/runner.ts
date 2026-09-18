@@ -193,7 +193,7 @@ import {
   RoutingError,
   type AgentRoutingContext,
 } from './agent-routing';
-import { DETAILED_SKIP_TO_CANONICAL, KNOWN_REQUIREMENTS } from './types';
+import { DETAILED_SKIP_TO_CANONICAL, KNOWN_REQUIREMENTS, UNVERIFIED_COVERAGE_SKIP_REASONS } from './types';
 import type { AgentProfile, TaskResult, TestStepResult } from '../types';
 import {
   type AssertionContext,
@@ -314,6 +314,8 @@ const DETAILED_SKIP_DETAILS: Partial<Record<RunnerDetailedSkipReason, string>> =
   rate_abuse_opt_out: 'Rate-abuse vector was excluded by request_signing.skipRateAbuse.',
   capability_profile_mismatch: 'Vector is outside the agent capability profile selected for this run.',
   transport_ungradable: 'Vector cannot be graded faithfully by the selected transport.',
+  signing_transport_unavailable:
+    "Request-signing vectors have no shape this run's protocol can carry, so no verifier behavior was graded.",
   rate_limit_not_triggered: 'No RATE_LIMITED response was observed within the configured max_attempts.',
 };
 
@@ -1938,6 +1940,14 @@ async function checkRequires(
         // `_client` mode). The caller has accepted responsibility for
         // capability compatibility; failing the gate here would surprise
         // them with a skip they can't explain from CLI options alone.
+        //
+        // Deliberately NOT gated on whether this run can frame the signing
+        // vectors: that is a per-step property (a routed `agents` run can
+        // pair a top-level `protocol: 'a2a'` with an MCP seller whose
+        // vectors grade fine), and a whole-storyboard skip would leave the
+        // security_transport track free to roll up green off a sibling
+        // oauth_setup pass. The ungradable case is reported per vector as
+        // `fixture_unavailable`, which forces the track partial.
         if (!profile?.raw_capabilities) break;
         const supported = resolveCapabilityPath(profile.raw_capabilities, 'request_signing.supported');
         if (supported === true) break;
@@ -4384,6 +4394,17 @@ async function executeStoryboardPass(
         (failedCount === 0 && requiredPhasesCoveredByCapabilityGates)));
   const storyboardWideFixtureUnavailable =
     (seedingUnsupported || fixtureUnsatisfied || creativeAssetFixtureGap !== undefined) && failedCount === 0;
+  // A storyboard that could not exercise the agent for the coverage it exists
+  // to assert must not report a pass, even when an SDK self-check step graded
+  // green beside the gap (adcp-client#2954). Distinct from
+  // `storyboardWideFixtureUnavailable`, which deliberately preserves a pass
+  // for single missing fixtures inside a run that did exercise the agent.
+  const hasUnverifiedCoverage = phaseResults.some(phase =>
+    phase.steps.some(
+      step =>
+        step.skipped === true && UNVERIFIED_COVERAGE_SKIP_REASONS.has(step.skip_reason as RunnerDetailedSkipReason)
+    )
+  );
   // Prepend the pre-flight seeding phase now that every consumer that
   // index-aligns `phaseResults` with `storyboard.phases` has run. Reader
   // order matches execution order.
@@ -4414,7 +4435,10 @@ async function executeStoryboardPass(
       ),
     }),
     overall_passed:
-      failedCount === 0 && (requiredPhasesPassed || storyboardWideFixtureUnavailable) && !assertionsFailed,
+      failedCount === 0 &&
+      (requiredPhasesPassed || storyboardWideFixtureUnavailable) &&
+      !assertionsFailed &&
+      !hasUnverifiedCoverage,
     phases: phaseResults,
     context,
     total_duration_ms: Date.now() - start,
@@ -7092,9 +7116,13 @@ async function executeProbeStep(
   if (httpResult?.skipped) {
     const detailedReason = (httpResult.skip_reason ?? 'probe_skipped') as RunnerDetailedSkipReason;
     const canonicalReason = DETAILED_SKIP_TO_CANONICAL[detailedReason] ?? 'not_applicable';
+    // Read the probe's error from the redacted copy: `skip.detail` is report
+    // surface, and a probe error can carry an agent URL with OAuth params. The
+    // detail strings the dispatch supplies today are constants, but this is
+    // the seam where an adopter-supplied one would land unredacted.
     const detail =
       CANONICAL_SKIP_DETAILS[detailedReason] ??
-      httpResult.error ??
+      redactedHttpResult?.error ??
       DETAILED_SKIP_DETAILS[detailedReason] ??
       SKIP_DETAILS[canonicalReason];
     const selectionResult = selectionForProbeSkip(detailedReason, detail);

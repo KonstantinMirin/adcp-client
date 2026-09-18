@@ -33,7 +33,9 @@ const platform = definePlatform({
     pricingModels: ['cpm'] as const,
   },
   accounts: { resolve: async (ref, ctx) => /* ... */ null },
-  sales: defineSalesCorePlatform({ /* handlers */ }),
+  sales: defineSalesCorePlatform({
+    /* handlers */
+  }),
 });
 
 createAdcpServerFromPlatform(platform, {
@@ -89,6 +91,12 @@ const revocationStore = new InMemoryRevocationStore({
 ```bash
 npx tsx agent.ts &
 npx @adcp/sdk@latest storyboard run http://localhost:3001/mcp signed_requests --json
+
+# Dev loop: skip the cap+1 flood, and any vector your deployment can't satisfy
+npx @adcp/sdk@latest storyboard run http://localhost:3001/mcp signed_requests \
+  --signing-skip-rate-abuse --signing-skip-vectors 007-missing-content-digest --json
 ```
 
 Every negative vector must return the exact `expected_outcome.error_code` in `WWW-Authenticate: Signature error="<code>"`. A non-claiming agent is not graded against this specialism.
+
+Grade the MCP (or REST) binding. The conformance vectors are framed as `tools/call` envelopes by default, or as per-operation HTTP requests with `--signing-transport raw`. There is no A2A framing for them, so on an A2A run every probed vector reports `COVERAGE UNAVAILABLE`, the storyboard cannot report a pass, and the track holds at `partial` — it never reads as a pass you did not earn. Only `025-jwk-alg-crv-mismatch` still grades there, and it grades the SDK verifier rather than your agent: it publishes a malformed JWK you never serve, so your implementation cannot affect it.

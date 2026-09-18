@@ -975,6 +975,21 @@ export type StoryboardValidationCheck =
   | 'http_status'
   | 'http_status_in'
   | 'on_401_require_header'
+  /**
+   * Assert that the step's probe reported no grading error, without asserting
+   * anything about an HTTP exchange. For probes whose verdict is decided
+   * in-library rather than on the wire — the `jwks_override` request-signing
+   * negatives, which mutate a JWK the agent under test never publishes and so
+   * are graded against the SDK verifier at `http_status: 0` — this is the only
+   * honest assertion: synthesizing a 401 from a library boolean would claim a
+   * wire exchange that never happened (RFC 9421 §3; adcp-client#2955).
+   *
+   * Passes when the probe result carries no `error`; fails with the probe's
+   * own diagnostic otherwise. Like the `http_status` family it requires a
+   * probe result, so authoring it on an ordinary task step fails the step
+   * rather than passing vacuously.
+   */
+  | 'probe_passed'
   // Cross-cutting
   | 'resource_equals_agent_url'
   | 'oauth_metadata_graph'
@@ -1746,15 +1761,29 @@ export interface StoryboardRunOptions extends TestOptions {
      *     operation AdCP endpoint (e.g. `<baseUrl>/create_media_buy`).
      *     Works for agents that expose AdCP tools as discrete HTTP
      *     operations.
-     *   - `mcp` (default) — wraps each vector body in a JSON-RPC `tools/call`
+     *   - `mcp` — wraps each vector body in a JSON-RPC `tools/call`
      *     envelope and POSTs to the agent's single `/mcp` mount. Required
      *     for MCP-only agents that don't expose per-operation endpoints.
      *     The operation name is derived from the last path segment of the
      *     vector's target URL.
      *
-     * Matches the `adcp grade request-signing --transport <mode>` CLI flag.
-     * Agents that only speak MCP JSON-RPC can't grade under `raw`; use
-     * `mcp` to let the runner round-trip every vector through `tools/call`.
+     * Defaults to the shape the run's `protocol` can actually grade: `mcp`
+     * on an MCP run, and no framing at all on an A2A run — the fixtures ship
+     * REST request bodies and no AdCP spec text defines an A2A framing for
+     * them. Vectors that need a framing then skip as
+     * `signing_transport_unavailable` (canonical `fixture_unavailable`, so
+     * the track grades `partial` and the gap stays visible) rather than
+     * being graded against a transport error (adcp-client#2954). Vectors
+     * that need no framing still run: the `jwks_override` negatives are
+     * decided in-library, and protocol-method negatives replay their own
+     * JSON-RPC body verbatim. Setting this field explicitly overrides the
+     * inference on any protocol; on an A2A run, do that only when the
+     * agent's MCP or REST binding answers at the same URL.
+     *
+     * Matches the `adcp grade request-signing --transport <mode>` CLI flag,
+     * and `adcp storyboard run --signing-transport <mode>`. Agents that only
+     * speak MCP JSON-RPC can't grade under `raw`; use `mcp` to let the runner
+     * round-trip every vector through `tools/call`.
      */
     transport?: 'raw' | 'mcp';
     /**
@@ -2126,6 +2155,15 @@ export type RunnerDetailedSkipReason =
   | 'capability_profile_mismatch'
   /** Request-signing vector cannot be graded faithfully by the selected transport. */
   | 'transport_ungradable'
+  /**
+   * The run's protocol has no shape the request-signing vectors can be
+   * framed in, so the runner could not grade them at all — a runner-owned
+   * coverage gap, not a property of the agent. Canonicalizes to
+   * `fixture_unavailable` (never `not_applicable`): the vectors are missing,
+   * not inapplicable, so the track stays `partial` and the gap is visible
+   * instead of rolling up green behind a sibling storyboard's passes.
+   */
+  | 'signing_transport_unavailable'
   /** Request-signing grader's MCP-transport mode collapses URL-edge vectors (#617). */
   | 'mcp_mode_flattens_url_edges'
   /** RFC 9728 protected-resource metadata returned 404 → agent is not advertising OAuth, cascade-skip oauth_discovery (#677). */
@@ -2185,12 +2223,42 @@ export type RunnerDetailedSkipReason =
  * consumers reading `skip.reason` get a stable enum regardless of which
  * subsystem produced the skip.
  */
+/**
+ * Skip reasons that mean "the runner never exercised the agent for what this
+ * storyboard asserts", so a storyboard carrying one cannot report
+ * `overall_passed: true` no matter what else graded.
+ *
+ * Narrower than `fixture_unavailable` as a whole, deliberately. The other
+ * producers of that canonical reason (seeding unsupported, fixture ladder
+ * exhausted, creative-asset gap) are single missing inputs inside a
+ * storyboard that still exercised the agent, and AdCP 3.0.x semantics
+ * (adcp#6278) keep those non-failing. `signing_transport_unavailable` is the
+ * opposite: zero wire verification happened, and the only step that can still
+ * pass is an SDK self-check the agent never saw — the shape that let a
+ * `signed_requests` run report a pass having verified nothing
+ * (adcp-client#2954).
+ */
+export const UNVERIFIED_COVERAGE_SKIP_REASONS: ReadonlySet<RunnerDetailedSkipReason> = new Set([
+  'signing_transport_unavailable',
+]);
+
 export const DETAILED_SKIP_TO_CANONICAL: Record<RunnerDetailedSkipReason, RunnerSkipReason> = {
   probe_skipped: 'not_applicable',
   not_in_only_vectors: 'not_applicable',
   grader_skipped: 'not_applicable',
   capability_profile_mismatch: 'not_applicable',
+  // Scope note (adcp-client#2954): `transport_ungradable` marks the two
+  // vectors the grader's own TRANSPORT_UNGRADABLE table carves out on every
+  // run (026 non-ASCII host, profile-3.2/002 malformed authority) because no
+  // HTTP client can put those bytes on the wire. It keeps `not_applicable`
+  // here deliberately — flipping it would turn every signed_requests run,
+  // MCP included, `partial` for two vectors out of ~40 while the other 38
+  // still verify the agent. `signing_transport_unavailable` is the opposite
+  // shape: zero vectors graded, so it must not read as inapplicability.
+  // Whether the two carve-outs should also count as coverage gaps is a
+  // separate question from these three issues and is left to a follow-up.
   transport_ungradable: 'not_applicable',
+  signing_transport_unavailable: 'fixture_unavailable',
   mcp_mode_flattens_url_edges: 'not_applicable',
   oauth_not_advertised: 'not_applicable',
   rate_limit_not_triggered: 'not_applicable',

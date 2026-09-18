@@ -600,6 +600,15 @@ export interface ComplyOptions extends TestOptions {
    * through to `runStoryboard`; default false.
    */
   allowLiveSideEffects?: StoryboardRunOptions['allowLiveSideEffects'];
+  /**
+   * Request-signing grader knobs for the `signed_requests` storyboard's
+   * synthesized vector steps (transport, skip lists, rate-abuse opt-out).
+   * Passed through to `runStoryboard`. See
+   * `StoryboardRunOptions.request_signing`; the CLI surfaces the same knobs
+   * as `--signing-transport` / `--signing-skip-vectors` /
+   * `--signing-skip-rate-abuse`.
+   */
+  request_signing?: StoryboardRunOptions['request_signing'];
   /** Explicit compliance cache version override. */
   version?: string;
   /** Explicit compliance cache directory override. */
@@ -1339,6 +1348,7 @@ async function complyImpl(agentUrl: string, options: ComplyOptions): Promise<Com
     trusted_match_publisher_auth_runner,
     contracts,
     allowLiveSideEffects,
+    request_signing,
     version,
     complianceDir,
     schemaRoot,
@@ -1626,6 +1636,7 @@ async function complyImpl(agentUrl: string, options: ComplyOptions): Promise<Com
       ...(trusted_match_publisher_auth_runner !== undefined && { trusted_match_publisher_auth_runner }),
       ...(contracts !== undefined && { contracts }),
       ...(allowLiveSideEffects !== undefined && { allowLiveSideEffects }),
+      ...(request_signing !== undefined && { request_signing }),
       ...(signal !== undefined && { signal }),
     };
 
@@ -2006,6 +2017,7 @@ async function runWithDegradedProfile(
     }),
     ...(options.contracts !== undefined && { contracts: options.contracts }),
     ...(options.allowLiveSideEffects !== undefined && { allowLiveSideEffects: options.allowLiveSideEffects }),
+    ...(options.request_signing !== undefined && { request_signing: options.request_signing }),
     ...(signal !== undefined && { signal }),
   };
 
