@@ -2762,11 +2762,16 @@ async function resolveFileComplianceRunOptions(args, opts) {
   return { adcpVersion, complianceDir, schemaRoot };
 }
 
-// Only render runner-authored capability dependency details here. Other skip
-// details can contain raw seller diagnostics and retain their existing surface.
-function printCapabilityPrerequisiteSkip(step) {
-  if (!step.skipped || step.skip_reason !== 'capability_prerequisite_unavailable' || !step.skip?.detail || step.error)
-    return;
+// Only render runner-authored skip details here. Other skip details can
+// contain raw seller diagnostics and retain their existing surface.
+//
+// `session_probe_ungradable` is included because its detail is the only place
+// an operator learns why the MCP session probe could not grade a positive
+// static-credential step, and what to do about it (adcp-client#2940).
+const RUNNER_AUTHORED_SKIP_DETAILS = new Set(['capability_prerequisite_unavailable', 'session_probe_ungradable']);
+
+function printRunnerSkipDetail(step) {
+  if (!step.skipped || !RUNNER_AUTHORED_SKIP_DETAILS.has(step.skip_reason) || !step.skip?.detail || step.error) return;
   const detail = String(step.skip.detail).replace(
     /[\u0000-\u001f\u007f-\u009f]/g,
     char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`
@@ -3030,6 +3035,7 @@ async function handleStoryboardRun(args) {
         missing_tool: ' [missing tool]',
         missing_test_controller: ' [needs test controller]',
         not_applicable: ' [not applicable]',
+        session_probe_ungradable: ' [session probe cannot grade]',
         no_phases: ' [no phases]',
         prerequisite_failed: ' [prerequisite failed]',
         capability_prerequisite_unavailable: ' [capability prerequisite unavailable]',
@@ -3040,7 +3046,7 @@ async function handleStoryboardRun(args) {
         const skipLabel = SKIP_LABELS[step.skip_reason] ?? '';
         console.log(`\n${icon} ${step.title}${skipLabel} (${step.duration_ms}ms)`);
         console.log(`   Task: ${step.task}`);
-        printCapabilityPrerequisiteSkip(step);
+        printRunnerSkipDetail(step);
         if (step.error) {
           console.log(`   Error: ${step.error}`);
         }
@@ -4453,7 +4459,7 @@ async function handleMultiInstanceStoryboardRun(args, opts, urls) {
           const instTag = step.agent_index ? `[#${step.agent_index}] ` : '';
           console.log(`\n${icon} ${instTag}${step.title}${skipLabel} (${step.duration_ms}ms)`);
           console.log(`   Task: ${step.task}`);
-          printCapabilityPrerequisiteSkip(step);
+          printRunnerSkipDetail(step);
           if (step.error) {
             console.log(`   Error: ${step.error}`);
           }
@@ -4770,7 +4776,7 @@ async function handleAgentsRoutedStoryboardRun(args, opts, routing) {
           }
           console.log(`\n${icon} ${agentTag}${step.title}${skipLabel} (${step.duration_ms}ms)`);
           console.log(`   Task: ${step.task}`);
-          printCapabilityPrerequisiteSkip(step);
+          printRunnerSkipDetail(step);
           if (step.error) console.log(`   Error: ${step.error}`);
           for (const v of step.validations) {
             const vIcon = v.passed ? '✅' : '❌';

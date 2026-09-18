@@ -2249,36 +2249,48 @@ test('mixed explicit inputs and request tokens preserve hard prerequisite preced
   }
 });
 
-test('CLI capability skip diagnostics escape controls without exposing unrelated seller details', () => {
+test('CLI runner-authored skip diagnostics escape controls without exposing unrelated seller details', () => {
   const fs = require('node:fs');
   const vm = require('node:vm');
   const source = fs.readFileSync(require.resolve('../../bin/adcp.js'), 'utf8');
   const helper = source.slice(
-    source.indexOf('function printCapabilityPrerequisiteSkip'),
+    source.indexOf('const RUNNER_AUTHORED_SKIP_DETAILS'),
     source.indexOf('async function handleStoryboardRun')
   );
   const lines = [];
   const scope = { console: { log: line => lines.push(line) } };
   vm.runInNewContext(helper, scope);
-  scope.printCapabilityPrerequisiteSkip({
+  // Reasons whose detail can carry raw seller diagnostics stay silent.
+  scope.printRunnerSkipDetail({
     skipped: true,
     skip_reason: 'not_applicable',
     skip: { detail: 'seller-secret\u001b[2J' },
   });
   assert.deepEqual(lines, []);
-  scope.printCapabilityPrerequisiteSkip({
+  scope.printRunnerSkipDetail({
     skipped: true,
     skip_reason: 'capability_prerequisite_unavailable',
     skip: { detail: 'missing\u001b[2J\u009b31m\nkey' },
   });
   assert.deepEqual(lines, ['   Skipped: missing\\u001b[2J\\u009b31m\\u000akey']);
-  scope.printCapabilityPrerequisiteSkip({
+  // The MCP session probe's ungradable-positive detail is the only place an
+  // operator learns why the static-credential branch cannot contribute, so it
+  // is rendered too — with the same escaping (adcp-client#2940).
+  lines.length = 0;
+  scope.printRunnerSkipDetail({
+    skipped: true,
+    skip_reason: 'session_probe_ungradable',
+    skip: { detail: 'cannot grade a positive\u001b[2J step' },
+  });
+  assert.deepEqual(lines, ['   Skipped: cannot grade a positive\\u001b[2J step']);
+  lines.length = 0;
+  scope.printRunnerSkipDetail({
     skipped: true,
     skip_reason: 'capability_prerequisite_unavailable',
     skip: { detail: 'duplicate' },
     error: 'already rendered',
   });
-  assert.equal(lines.length, 1);
+  assert.equal(lines.length, 0);
 });
 
 test('neutral stateful cascades cannot conceal hard declared input dependencies', async () => {
